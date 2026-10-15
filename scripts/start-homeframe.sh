@@ -4,6 +4,10 @@ set -euo pipefail
 APP_DIR="${HOMEFRAME_DIR:-$HOME/homeframe}"
 PORT="${HOMEFRAME_PORT:-3000}"
 LOG_FILE="$APP_DIR/homeframe.log"
+CLOSE_FILE="${XDG_RUNTIME_DIR:-/tmp}/homeframe-close-${UID:-$(id -u)}"
+
+rm -f "$CLOSE_FILE"
+export HOMEFRAME_CLOSE_FILE="$CLOSE_FILE"
 
 cd "$APP_DIR"
 
@@ -19,9 +23,18 @@ fi
 
 node --env-file=.env.local ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --port "$PORT" --ip 127.0.0.1 >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
+BROWSER_PID=""
+WATCHDOG_PID=""
 
 cleanup() {
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$BROWSER_PID" ]]; then
+    kill "$BROWSER_PID" 2>/dev/null || true
+  fi
   kill "$SERVER_PID" 2>/dev/null || true
+  rm -f "$CLOSE_FILE"
 }
 trap cleanup EXIT INT TERM
 
@@ -48,4 +61,18 @@ if [[ -z "$BROWSER" ]]; then
   exit 0
 fi
 
-"$BROWSER" --kiosk --app="http://127.0.0.1:$PORT/" --noerrdialogs --disable-infobars
+"$BROWSER" --kiosk --app="http://127.0.0.1:$PORT/" --noerrdialogs --disable-infobars &
+BROWSER_PID=$!
+
+(
+  while kill -0 "$BROWSER_PID" 2>/dev/null && [[ ! -f "$CLOSE_FILE" ]]; do
+    sleep 0.25
+  done
+
+  if [[ -f "$CLOSE_FILE" ]]; then
+    kill "$BROWSER_PID" 2>/dev/null || true
+  fi
+) &
+WATCHDOG_PID=$!
+
+wait "$BROWSER_PID" 2>/dev/null || true

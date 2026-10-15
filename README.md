@@ -28,6 +28,8 @@ chmod +x scripts/*.sh
 
 After adding the four private values to `.env.local`, double-click the **HomeFrame** desktop icon. The launcher loads the credentials, starts the production build on `127.0.0.1:3000`, waits for it to become ready, and opens Chromium in kiosk mode.
 
+Use the **X** button in HomeFrame's top-right corner to close the kiosk window and return to the Raspberry Pi desktop. The launcher also stops HomeFrame's local server when the window closes, so Tideframe and HomeFrame can be opened independently from their desktop icons.
+
 ## Updating the Pi
 
 ```bash
