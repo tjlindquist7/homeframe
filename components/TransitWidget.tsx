@@ -55,16 +55,19 @@ export function TransitWidget() {
   const [manualUntil, setManualUntil] = useState<number | null>(null);
 
   const refreshTransit = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/transit?fresh=${Date.now()}`, { cache: "no-store" });
-      const next = await response.json() as TransitData;
-      if (!response.ok) throw new Error(next.error || "NJ TRANSIT unavailable");
-      setData(next);
-      window.localStorage.setItem(TRANSIT_CACHE_KEY, JSON.stringify(next));
-      return true;
-    } catch {
-      return false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const response = await fetch(`/api/transit?fresh=${Date.now()}`, { cache: "no-store" });
+        const next = await response.json() as TransitData;
+        if (!response.ok) throw new Error(next.error || "NJ TRANSIT unavailable");
+        setData(next);
+        window.localStorage.setItem(TRANSIT_CACHE_KEY, JSON.stringify(next));
+        return true;
+      } catch {
+        if (attempt === 0) await new Promise((resolve) => window.setTimeout(resolve, 750));
+      }
     }
+    return false;
   }, []);
 
   const refreshFerry = useCallback(async () => {
@@ -166,7 +169,8 @@ export function TransitWidget() {
         <div className="mode-icon bus"><BusFront size={19} strokeWidth={2.2} /></div>
         <div className="route-copy"><div><strong>{row.route}</strong></div><div className="route-destination">{row.destination}</div></div>
         <div className="departure-times live-times">
-          {!showingData ? <span className="click-refresh">Click Refresh</span>
+          {refreshing ? <span className="click-refresh">Updating…</span>
+            : !showingData ? <span className="click-refresh">Click Refresh</span>
             : row.trips.length ? row.trips.slice(0, 3).map((trip, index) => <DepartureChip key={`${trip.route}-${trip.departureTime}-${index}`} departure={trip} combined={row.key === "lincoln"} />)
               : <span className="no-trips">No departures</span>}
         </div>
@@ -175,7 +179,8 @@ export function TransitWidget() {
         <div className="mode-icon ferry"><Ship size={19} strokeWidth={2.2} /></div>
         <div className="route-copy"><div><strong>Ferry</strong></div><div className="route-destination">Lincoln Harbor → Midtown · Schedule</div></div>
         <div className="departure-times live-times">
-          {!showingData ? <span className="click-refresh">Click Refresh</span>
+          {refreshing ? <span className="click-refresh">Updating…</span>
+            : !showingData ? <span className="click-refresh">Click Refresh</span>
             : ferry?.departures.length ? ferry.departures.slice(0, 3).map((departure, index) => <span className="departure-chip" key={`${departure.time}-${departure.dayOffset}-${index}`}>
               <b>{formatFerryWait(departure.minutes)}</b>
             </span>) : <span className="no-trips">No departures</span>}

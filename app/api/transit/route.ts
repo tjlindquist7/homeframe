@@ -39,7 +39,7 @@ async function postForm(endpoint: string, fields: Record<string, string>): Promi
     headers: { Accept: "text/plain", "User-Agent": "HomeFrame/1.0" },
     body,
     cache: "no-store",
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(7_500),
   });
   if (!response.ok) throw new Error(`NJ TRANSIT returned ${response.status}`);
   return response.json();
@@ -132,8 +132,13 @@ function mergeDepartures(liveTrips: Departure[], scheduledTrips: Departure[]) {
 async function loadSchedules(token: string) {
   if (scheduleCache && scheduleCache.expiresAt > Date.now()) return scheduleCache.value;
   const entries = await Promise.all(TARGETS.map(async (target) => {
-    const routeResults = await Promise.all(target.routes.map((route) => getRouteTrips(token, target.stop, route)));
-    return [target.key, routeResults.flat()] as const;
+    const routeResults = await Promise.allSettled(target.routes.map((route) => getRouteTrips(token, target.stop, route)));
+    const invalidToken = routeResults.find((result) => result.status === "rejected"
+      && result.reason instanceof Error
+      && result.reason.message === "INVALID_TOKEN");
+    if (invalidToken?.status === "rejected") throw invalidToken.reason;
+    const trips = routeResults.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+    return [target.key, trips] as const;
   }));
   const value = Object.fromEntries(entries);
   scheduleCache = { value, expiresAt: Date.now() + 10 * 60_000 };
@@ -142,12 +147,24 @@ async function loadSchedules(token: string) {
 
 async function loadTransit(username: string, password: string, forceToken = false) {
   const token = await authenticate(username, password, forceToken);
-  const schedules = await loadSchedules(token);
+  const schedulesPromise = loadSchedules(token);
   const results = await Promise.all(TARGETS.map(async (target) => {
-    const data = await getBusDv(token, target.stop, target.key === "126" ? "126" : "");
-    const liveTrips = parseTrips(data.DVTrip ?? [], target.routes);
+    const [schedules, liveResults] = await Promise.all([
+      schedulesPromise,
+      Promise.allSettled(target.routes.map((route) => getBusDv(token, target.stop, route))),
+    ]);
+    const invalidToken = liveResults.find((result) => result.status === "rejected"
+      && result.reason instanceof Error
+      && result.reason.message === "INVALID_TOKEN");
+    if (invalidToken?.status === "rejected") throw invalidToken.reason;
+    const liveData = liveResults.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    const liveTrips = parseTrips(liveData.flatMap((data) => data.DVTrip ?? []), target.routes);
     const scheduledTrips = parseTrips(schedules[target.key] ?? [], target.routes);
-    return { key: target.key, trips: mergeDepartures(liveTrips, scheduledTrips), messages: collectMessages(data) };
+    return {
+      key: target.key,
+      trips: mergeDepartures(liveTrips, scheduledTrips),
+      messages: liveData.flatMap(collectMessages),
+    };
   }));
   return results;
 }
@@ -178,7 +195,8 @@ export async function GET() {
       departures: Object.fromEntries(results.map((result) => [result.key, result.trips])),
       alerts: [...new Set(results.flatMap((result) => result.messages))].slice(0, 3),
     };
-    responseCache = { value: payload, expiresAt: Date.now() + 30_000 };
+    const hasDepartures = results.some((result) => result.trips.length > 0);
+    responseCache = { value: payload, expiresAt: Date.now() + (hasDepartures ? 30_000 : 5_000) };
     return NextResponse.json(payload, { headers: { "Cache-Control": "private, max-age=30" } });
   } catch (error) {
     return NextResponse.json({
