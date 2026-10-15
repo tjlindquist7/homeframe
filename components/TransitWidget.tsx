@@ -16,6 +16,9 @@ const emptyTransitData: TransitData = {
   alerts: [],
 };
 
+const TRANSIT_CACHE_KEY = "homeframe-transit-data-v2";
+const LEGACY_TRANSIT_CACHE_KEY = "homeframe-transit-data";
+
 function isScheduledWindow(date = new Date()) {
   const hour = Number(new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
@@ -53,11 +56,11 @@ export function TransitWidget() {
 
   const refreshTransit = useCallback(async () => {
     try {
-      const response = await fetch("/api/transit", { cache: "no-store" });
+      const response = await fetch(`/api/transit?fresh=${Date.now()}`, { cache: "no-store" });
       const next = await response.json() as TransitData;
       if (!response.ok) throw new Error(next.error || "NJ TRANSIT unavailable");
       setData(next);
-      window.localStorage.setItem("homeframe-transit-data", JSON.stringify(next));
+      window.localStorage.setItem(TRANSIT_CACHE_KEY, JSON.stringify(next));
       return true;
     } catch {
       return false;
@@ -78,8 +81,7 @@ export function TransitWidget() {
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
     try {
-      const results = await Promise.all([refreshTransit(), refreshFerry()]);
-      return results.some(Boolean);
+      return await Promise.all([refreshTransit(), refreshFerry()]);
     } finally {
       setRefreshing(false);
     }
@@ -87,7 +89,8 @@ export function TransitWidget() {
 
   useEffect(() => {
     setPaused(window.localStorage.getItem("homeframe-transit-paused") === "true");
-    const cached = window.localStorage.getItem("homeframe-transit-data");
+    window.localStorage.removeItem(LEGACY_TRANSIT_CACHE_KEY);
+    const cached = window.localStorage.getItem(TRANSIT_CACHE_KEY);
     if (cached) {
       try { setData(JSON.parse(cached) as TransitData); } catch { /* Ignore a damaged local cache. */ }
     }
@@ -131,8 +134,10 @@ export function TransitWidget() {
   });
 
   const refreshNow = async () => {
-    const succeeded = await refreshAll();
-    if (succeeded && !scheduleActive) setManualUntil(Date.now() + 5 * 60_000);
+    window.localStorage.removeItem(TRANSIT_CACHE_KEY);
+    setData(emptyTransitData);
+    const [transitSucceeded, ferrySucceeded] = await refreshAll();
+    if ((transitSucceeded || ferrySucceeded) && !scheduleActive) setManualUntil(Date.now() + 5 * 60_000);
   };
 
   const manualActive = manualUntil !== null;
