@@ -33,6 +33,15 @@ function newYorkWallClockToDate(year: number, month: number, day: number, hour: 
   return new Date(instant);
 }
 
+function newYorkDateParts(instant: Date) {
+  const parts = Object.fromEntries(
+    zonedPartsFormatter.formatToParts(instant)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return { year: parts.year, month: parts.month, day: parts.day };
+}
+
 export function parseNjTransitDate(value: string) {
   if (!value) return null;
 
@@ -54,4 +63,22 @@ export function parseNjTransitDate(value: string) {
 
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function parseNjTransitClock(value: string, now = new Date()) {
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)$/i);
+  if (!match) return null;
+
+  const [, hourValue, minuteValue, secondValue = "0", meridiemValue] = match;
+  const meridiem = meridiemValue.toUpperCase();
+  const hour = Number(hourValue) % 12 + (meridiem === "PM" ? 12 : 0);
+  const { year, month, day } = newYorkDateParts(now);
+  let departure = newYorkWallClockToDate(year, month, day, hour, Number(minuteValue), Number(secondValue));
+
+  // Around midnight, a small clock time can describe tomorrow's departure.
+  if (departure.getTime() - now.getTime() < -12 * 60 * 60_000) {
+    departure = newYorkWallClockToDate(year, month, day + 1, hour, Number(minuteValue), Number(secondValue));
+  }
+
+  return departure;
 }

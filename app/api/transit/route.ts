@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { parseNjTransitDate } from "../../../lib/nj-transit-time";
+import { parseNjTransitClock, parseNjTransitDate } from "../../../lib/nj-transit-time";
 
 const NJT_API = "https://pcsdata.njtransit.com/api/BUSDV2";
 const TARGETS = [
@@ -76,8 +76,10 @@ function predictedMinutes(value: string, scheduledTime: string) {
   if (/due|arriving|now/i.test(value)) return 0;
   const countdown = value.match(/(?:in\s*)?(\d+)\s*min/i);
   if (countdown) return Number(countdown[1]);
+  const predicted = parseNjTransitClock(value);
+  if (predicted) return Math.ceil((predicted.getTime() - Date.now()) / 60_000);
   const scheduled = parseNjTransitDate(scheduledTime);
-  return scheduled ? Math.max(0, Math.round((scheduled.getTime() - Date.now()) / 60_000)) : null;
+  return scheduled ? Math.ceil((scheduled.getTime() - Date.now()) / 60_000) : null;
 }
 
 function parseTrips(trips: BusDvTrip[], allowedRoutes: readonly string[]): Departure[] {
@@ -87,7 +89,7 @@ function parseTrips(trips: BusDvTrip[], allowedRoutes: readonly string[]): Depar
       const scheduledTime = trip.sched_dep_time ?? "";
       const minutes = predictedMinutes(trip.departuretime ?? "", scheduledTime);
       const scheduled = parseNjTransitDate(scheduledTime);
-      const scheduledMinutes = scheduled ? Math.max(0, Math.round((scheduled.getTime() - Date.now()) / 60_000)) : null;
+      const scheduledMinutes = scheduled ? Math.ceil((scheduled.getTime() - Date.now()) / 60_000) : null;
       return {
         route,
         destination: (trip.header ?? "New York").trim(),
@@ -99,7 +101,10 @@ function parseTrips(trips: BusDvTrip[], allowedRoutes: readonly string[]): Depar
         message: trip.message ?? trip.remarks ?? "",
       };
     })
-    .filter((trip) => allowedRoutes.includes(trip.route) && /new york|port authority|pabt/i.test(trip.destination))
+    .filter((trip) => allowedRoutes.includes(trip.route)
+      && /new york|port authority|pabt/i.test(trip.destination)
+      && trip.minutes !== null
+      && trip.minutes >= 0)
     .sort((a, b) => (a.minutes ?? Number.MAX_SAFE_INTEGER) - (b.minutes ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 3);
 }
