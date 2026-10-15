@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { parseNjTransitDate } from "../../../lib/nj-transit-time";
 
 const NJT_API = "https://pcsdata.njtransit.com/api/BUSDV2";
 const TARGETS = [
@@ -71,17 +72,11 @@ async function getRouteTrips(token: string, location: string, route: string) {
   return Array.isArray(result) ? result as BusDvTrip[] : [];
 }
 
-function parseScheduledDate(value: string) {
-  if (!value) return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
 function predictedMinutes(value: string, scheduledTime: string) {
   if (/due|arriving|now/i.test(value)) return 0;
   const countdown = value.match(/(?:in\s*)?(\d+)\s*min/i);
   if (countdown) return Number(countdown[1]);
-  const scheduled = parseScheduledDate(scheduledTime);
+  const scheduled = parseNjTransitDate(scheduledTime);
   return scheduled ? Math.max(0, Math.round((scheduled.getTime() - Date.now()) / 60_000)) : null;
 }
 
@@ -91,7 +86,7 @@ function parseTrips(trips: BusDvTrip[], allowedRoutes: readonly string[]): Depar
       const route = String(trip.public_route ?? "").match(/\d+/)?.[0] ?? "";
       const scheduledTime = trip.sched_dep_time ?? "";
       const minutes = predictedMinutes(trip.departuretime ?? "", scheduledTime);
-      const scheduled = parseScheduledDate(scheduledTime);
+      const scheduled = parseNjTransitDate(scheduledTime);
       const scheduledMinutes = scheduled ? Math.max(0, Math.round((scheduled.getTime() - Date.now()) / 60_000)) : null;
       return {
         route,
@@ -119,7 +114,7 @@ function collectMessages(result: { message?: { message?: string } | string | nul
 function mergeDepartures(liveTrips: Departure[], scheduledTrips: Departure[]) {
   const departures = new Map<string, Departure>();
   [...liveTrips, ...scheduledTrips].forEach((trip) => {
-    const scheduled = parseScheduledDate(trip.scheduledTime);
+    const scheduled = parseNjTransitDate(trip.scheduledTime);
     const key = `${trip.route}-${(scheduled?.getTime() ?? trip.scheduledTime) || trip.departureTime}`;
     if (!departures.has(key)) departures.set(key, trip);
   });
