@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, BusFront, Clock3, PauseCircle, PlayCircle, Radio, Ship } from "lucide-react";
+import { AlertTriangle, BusFront, Clock3, PauseCircle, PlayCircle, Radio, RefreshCw, Ship } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 type Departure = { route: string; destination: string; departureTime: string; scheduledTime: string; minutes: number | null; delayMinutes: number; live: boolean };
@@ -8,16 +8,22 @@ type TransitData = { configured: boolean; source: string; updatedAt: string; dep
 type FerryDeparture = { time: string; minutes: number; dayOffset: number };
 type FerryData = { route: string; service: "weekday" | "weekend"; source: string; updatedAt: string; departures: FerryDeparture[] };
 
-const fallback: TransitData = {
+const emptyTransitData: TransitData = {
   configured: false,
   source: "setup",
   updatedAt: new Date(0).toISOString(),
-  departures: {
-    "126": [7, 24, 41].map((minutes) => ({ route: "126", destination: "New York", departureTime: "", scheduledTime: "", minutes, delayMinutes: 0, live: false })),
-    lincoln: [["158", 12], ["159", 31], ["156", 56]].map(([route, minutes]) => ({ route: String(route), destination: "New York", departureTime: "", scheduledTime: "", minutes: Number(minutes), delayMinutes: 0, live: false })),
-  },
+  departures: {},
   alerts: [],
 };
+
+function isScheduledWindow(date = new Date()) {
+  const hour = Number(new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).format(date));
+  return hour >= 6 && hour < 9;
+}
 
 function DepartureChip({ departure, combined = false }: { departure: Departure; combined?: boolean }) {
   const delayed = departure.delayMinutes >= 5;
@@ -36,24 +42,48 @@ function formatFerryWait(minutes: number) {
 }
 
 export function TransitWidget() {
-  const [data, setData] = useState<TransitData>(fallback);
+  const [data, setData] = useState<TransitData>(emptyTransitData);
   const [ferry, setFerry] = useState<FerryData | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [paused, setPaused] = useState(false);
   const [preferenceLoaded, setPreferenceLoaded] = useState(false);
+  const [scheduleReady, setScheduleReady] = useState(false);
+  const [scheduleActive, setScheduleActive] = useState(false);
+  const [manualUntil, setManualUntil] = useState<number | null>(null);
 
   const refreshTransit = useCallback(async () => {
-    setRefreshing(true);
     try {
       const response = await fetch("/api/transit", { cache: "no-store" });
       const next = await response.json() as TransitData;
-      if (response.ok) {
-        const usable = next.configured ? next : fallback;
-        setData(usable);
-        window.localStorage.setItem("homeframe-transit-data", JSON.stringify(usable));
-      }
-    } finally { setRefreshing(false); }
+      if (!response.ok) throw new Error(next.error || "NJ TRANSIT unavailable");
+      setData(next);
+      window.localStorage.setItem("homeframe-transit-data", JSON.stringify(next));
+      return true;
+    } catch {
+      return false;
+    }
   }, []);
+
+  const refreshFerry = useCallback(async () => {
+    try {
+      const response = await fetch("/api/ferry", { cache: "no-store" });
+      if (!response.ok) throw new Error("Ferry schedule unavailable");
+      setFerry(await response.json() as FerryData);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const results = await Promise.all([refreshTransit(), refreshFerry()]);
+      return results.some(Boolean);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshFerry, refreshTransit]);
 
   useEffect(() => {
     setPaused(window.localStorage.getItem("homeframe-transit-paused") === "true");
@@ -65,23 +95,34 @@ export function TransitWidget() {
   }, []);
 
   useEffect(() => {
-    const refreshFerry = async () => {
-      try {
-        const response = await fetch("/api/ferry", { cache: "no-store" });
-        if (response.ok) setFerry(await response.json() as FerryData);
-      } catch { /* Keep the last published ferry schedule on screen. */ }
-    };
-    refreshFerry();
-    const interval = window.setInterval(refreshFerry, 15 * 60_000);
+    const updateWindow = () => setScheduleActive(isScheduledWindow());
+    updateWindow();
+    setScheduleReady(true);
+    const interval = window.setInterval(updateWindow, 30_000);
     return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    if (!preferenceLoaded || paused) return;
-    refreshTransit();
-    const interval = window.setInterval(refreshTransit, 45_000);
-    return () => window.clearInterval(interval);
-  }, [paused, preferenceLoaded, refreshTransit]);
+    if (!preferenceLoaded || !scheduleReady || !scheduleActive || paused) return;
+    void refreshAll();
+    const transitInterval = window.setInterval(refreshTransit, 45_000);
+    const ferryInterval = window.setInterval(refreshFerry, 15 * 60_000);
+    return () => {
+      window.clearInterval(transitInterval);
+      window.clearInterval(ferryInterval);
+    };
+  }, [paused, preferenceLoaded, refreshAll, refreshFerry, refreshTransit, scheduleActive, scheduleReady]);
+
+  useEffect(() => {
+    if (!manualUntil) return;
+    const remaining = manualUntil - Date.now();
+    if (remaining <= 0) {
+      setManualUntil(null);
+      return;
+    }
+    const timeout = window.setTimeout(() => setManualUntil(null), remaining);
+    return () => window.clearTimeout(timeout);
+  }, [manualUntil]);
 
   const togglePaused = () => setPaused((current) => {
     const next = !current;
@@ -89,41 +130,58 @@ export function TransitWidget() {
     return next;
   });
 
+  const refreshNow = async () => {
+    const succeeded = await refreshAll();
+    if (succeeded && !scheduleActive) setManualUntil(Date.now() + 5 * 60_000);
+  };
+
+  const manualActive = manualUntil !== null;
+  const showingData = scheduleActive || manualActive;
   const rows = [
     { key: "126" as const, route: "126", destination: "19th St → Port Authority", trips: data.departures["126"] ?? [] },
     { key: "lincoln" as const, route: "156 · 158 · 159", destination: "Lincoln Harbor → Port Authority", trips: data.departures.lincoln ?? [] },
   ];
-  const delayedTrip = [...(data.departures["126"] ?? []), ...(data.departures.lincoln ?? [])].find((trip) => trip.delayMinutes >= 5);
-  const alert = data.alerts[0];
+  const delayedTrip = showingData ? [...(data.departures["126"] ?? []), ...(data.departures.lincoln ?? [])].find((trip) => trip.delayMinutes >= 5) : undefined;
+  const alert = showingData ? data.alerts[0] : undefined;
 
   return <section className="widget transit-card">
     <div className="card-title-row">
       <div className="card-kicker"><BusFront size={15} strokeWidth={2.35} />Bus and ferry departures</div>
-      <button type="button" className={`card-detail data-state transit-toggle ${paused ? "paused" : data.configured ? "connected" : ""}`} onClick={togglePaused} aria-pressed={paused} aria-label={paused ? "Resume NJ TRANSIT live updates" : "Pause NJ TRANSIT live updates"}>
-        {paused ? <PlayCircle size={10} /> : refreshing ? <Radio size={9} /> : <PauseCircle size={10} />}{paused ? "Paused" : refreshing ? "Updating" : data.configured ? "NJ TRANSIT live" : "Awaiting access"}
-      </button>
+      <div className="transit-actions">
+        {scheduleActive ? <button type="button" className={`card-detail data-state transit-toggle ${paused ? "paused" : data.configured ? "connected" : ""}`} onClick={togglePaused} aria-pressed={paused} aria-label={paused ? "Resume scheduled transit updates" : "Pause scheduled transit updates"}>
+          {paused ? <PlayCircle size={10} /> : refreshing ? <Radio size={9} /> : <PauseCircle size={10} />}{paused ? "Paused" : refreshing ? "Updating" : "Scheduled live"}
+        </button> : null}
+        <button type="button" className="commute-refresh commute-refresh-label transit-refresh" onClick={refreshNow} disabled={refreshing} aria-label="Refresh bus and ferry departures now" title="Refresh bus and ferry departures now">
+          <RefreshCw size={13} className={refreshing ? "spin" : ""} /><span>Refresh</span>
+        </button>
+      </div>
     </div>
     <div className="transit-list live-transit-list">
       {rows.map((row) => <article className="transit-row" key={row.key}>
         <div className="mode-icon bus"><BusFront size={19} strokeWidth={2.2} /></div>
         <div className="route-copy"><div><strong>{row.route}</strong></div><div className="route-destination">{row.destination}</div></div>
         <div className="departure-times live-times">
-          {row.trips.length ? row.trips.slice(0, 3).map((trip, index) => <DepartureChip key={`${trip.route}-${trip.departureTime}-${index}`} departure={trip} combined={row.key === "lincoln"} />) : <span className="no-trips">No trips</span>}
+          {!showingData ? <span className="click-refresh">Click Refresh</span>
+            : row.trips.length ? row.trips.slice(0, 3).map((trip, index) => <DepartureChip key={`${trip.route}-${trip.departureTime}-${index}`} departure={trip} combined={row.key === "lincoln"} />)
+              : <span className="no-trips">No departures</span>}
         </div>
       </article>)}
       <article className="transit-row ferry-row">
         <div className="mode-icon ferry"><Ship size={19} strokeWidth={2.2} /></div>
         <div className="route-copy"><div><strong>Ferry</strong></div><div className="route-destination">Lincoln Harbor → Midtown · Schedule</div></div>
         <div className="departure-times live-times">
-          {ferry?.departures.length ? ferry.departures.slice(0, 3).map((departure, index) => <span className="departure-chip" key={`${departure.time}-${departure.dayOffset}-${index}`}>
-            <b>{formatFerryWait(departure.minutes)}</b>
-          </span>) : <span className="no-trips">Loading schedule</span>}
+          {!showingData ? <span className="click-refresh">Click Refresh</span>
+            : ferry?.departures.length ? ferry.departures.slice(0, 3).map((departure, index) => <span className="departure-chip" key={`${departure.time}-${departure.dayOffset}-${index}`}>
+              <b>{formatFerryWait(departure.minutes)}</b>
+            </span>) : <span className="no-trips">No departures</span>}
         </div>
       </article>
     </div>
     <div className={`transit-footer ${!paused && (alert || delayedTrip) ? "has-alert" : ""}`}>
-      {paused ? <><Clock3 size={14} /><span>NJ TRANSIT updates are paused · tap Paused to resume</span></> : alert || delayedTrip ? <><AlertTriangle size={14} /><span>{alert ?? `Route ${delayedTrip?.route} is about ${delayedTrip?.delayMinutes} min late`}</span></> : <><Clock3 size={14} /><span>{data.configured ? "Live predictions refresh every 45 seconds" : "Add NJ TRANSIT developer credentials to activate live predictions"}</span></>}
+      {paused && scheduleActive ? <><Clock3 size={14} /><span>Scheduled updates are paused · tap Paused to resume</span></>
+        : alert || delayedTrip ? <><AlertTriangle size={14} /><span>{alert ?? `Route ${delayedTrip?.route} is about ${delayedTrip?.delayMinutes} min late`}</span></>
+          : <><Clock3 size={14} /><span>{manualActive ? "On-demand departures remain visible for 5 minutes" : scheduleActive ? "Live transit updates run automatically from 6–9 AM" : "Automatic transit updates run from 6–9 AM"}</span></>}
     </div>
-    <p className="transit-attribution">Data obtained from NJ TRANSIT · Predictions may change · Not affiliated with or endorsed by NJ TRANSIT</p>
+    <p className="transit-attribution">Data obtained from NJ TRANSIT and NY Waterway · Predictions may change · Not affiliated with or endorsed by NJ TRANSIT</p>
   </section>;
 }

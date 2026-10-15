@@ -16,6 +16,8 @@ Fill in `.env.local` with the NJ TRANSIT credentials, Google Maps Routes API key
 
 HomeFrame is designed to sit beside Tideframe under the same Raspberry Pi user account. It uses port `3000`; Tideframe can continue using port `5173`.
 
+HomeFrame requires Node.js 22 or newer. The installer and launcher automatically select Node 22 when it is installed through `nvm`.
+
 ```bash
 cd "$HOME"
 git clone https://github.com/tjlindquist7/homeframe.git
@@ -35,8 +37,8 @@ Use the **X** button in HomeFrame's top-right corner to close the kiosk window a
 ```bash
 cd "$HOME/homeframe"
 git pull --ff-only
-npm ci
-npm run build
+chmod +x scripts/*.sh
+./scripts/install-pi-desktop-shortcut.sh
 ```
 
-The Pi's `.env.local` remains untouched by Git updates.
+The Pi's `.env.local` remains untouched by Git updates. Each launch safely applies those private values to the generated local Worker configuration, so NJ TRANSIT, commute, calendar, and close-button access survive future rebuilds.

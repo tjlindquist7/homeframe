@@ -6,6 +6,19 @@ PORT="${HOMEFRAME_PORT:-3000}"
 LOG_FILE="$APP_DIR/homeframe.log"
 CLOSE_FILE="${XDG_RUNTIME_DIR:-/tmp}/homeframe-close-${UID:-$(id -u)}"
 
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [[ -s "$NVM_DIR/nvm.sh" ]]; then
+  # shellcheck disable=SC1091
+  . "$NVM_DIR/nvm.sh"
+  nvm use 22 >/dev/null
+fi
+
+if ! command -v node >/dev/null || [[ "$(node -p 'Number(process.versions.node.split(".")[0])')" -lt 22 ]]; then
+  echo "HomeFrame requires Node.js 22 or newer."
+  echo "Install Node 22 with nvm, then launch HomeFrame again."
+  exit 1
+fi
+
 rm -f "$CLOSE_FILE"
 export HOMEFRAME_CLOSE_FILE="$CLOSE_FILE"
 
@@ -21,7 +34,8 @@ if [[ ! -f dist/server/wrangler.json ]]; then
   npm run build
 fi
 
-node --env-file=.env.local ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --port "$PORT" --ip 127.0.0.1 >"$LOG_FILE" 2>&1 &
+node ./scripts/configure-runtime.mjs
+node ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --port "$PORT" --ip 127.0.0.1 >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 BROWSER_PID=""
 WATCHDOG_PID=""
@@ -54,14 +68,18 @@ if ! curl --silent --fail "http://127.0.0.1:$PORT/" >/dev/null; then
   exit 1
 fi
 
-BROWSER="$(command -v chromium-browser || command -v chromium || true)"
+if [[ -x /usr/lib/chromium/chromium ]]; then
+  BROWSER="/usr/lib/chromium/chromium"
+else
+  BROWSER="$(command -v chromium-browser || command -v chromium || true)"
+fi
 if [[ -z "$BROWSER" ]]; then
   echo "Chromium is not installed. HomeFrame is running at http://127.0.0.1:$PORT/"
   wait "$SERVER_PID"
   exit 0
 fi
 
-"$BROWSER" --kiosk --app="http://127.0.0.1:$PORT/" --noerrdialogs --disable-infobars &
+"$BROWSER" --kiosk --app="http://127.0.0.1:$PORT/" --user-data-dir="$APP_DIR/.chromium-profile" --noerrdialogs --disable-infobars &
 BROWSER_PID=$!
 
 (
